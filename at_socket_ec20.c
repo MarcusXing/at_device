@@ -442,39 +442,15 @@ static int ec20_socket_close(int socket)
     int result = 0;
     at_response_t resp = RT_NULL;
     
-    resp = at_create_resp(128, 2, rt_tick_from_millisecond(10*1000));
+    resp = at_create_resp(128, 0, rt_tick_from_millisecond(2*1000));
     if (!resp)
     {
         LOG_E("No memory for response structure!");
         return -RT_ENOMEM;
     }
-    /* default connection timeout is 10 seconds, but it set to 1 seconds is convenient to use.*/
+    /* default connection close timeout is 10 seconds, but it set to 1 seconds is convenient to use.*/
     result = at_exec_cmd(resp, "AT+QICLOSE=%d,1", socket);
 
-    /* result == RT_EOK means close command received, we need to check more resps*/
-    if (result == RT_EOK)
-    {
-        if (at_resp_get_line_by_kw(resp, "OK") != RT_NULL)
-        {
-            goto __exit;
-        }
-        else if (at_resp_get_line_by_kw(resp, "ERROR") != RT_NULL)
-        {
-            LOG_E("socket (%d) close failed, \"ERROR\" returned.", socket);
-            goto __exit;
-        }
-        else
-        {
-            LOG_E("socket (%d) close failed, not \"OK\" OR \"ERROR\" returned.", socket);
-            goto __exit;
-        }
-    }
-    else if (result == -RT_ETIMEOUT)
-    {
-        LOG_E("socket (%d) close failed, wait close OK timeout.", socket);
-    }
-
-__exit:
     if (resp)
     {
         at_delete_resp(resp);
@@ -665,7 +641,6 @@ static int ec20_socket_send(int socket, const char *buff, size_t bfsz, enum at_s
     /* set current socket for send URC event */
     cur_socket = socket;
     /* set AT client end sign to deal with '>' sign.*/
-    extern int at_set_end_sign(char ch);
     at_set_end_sign('>');
 
     while (sent_size < bfsz)
@@ -1054,32 +1029,6 @@ static const struct at_urc urc_table[] = {
         {"+QIURC:",     "\r\n",                 urc_qiurc_func},
 };
 
-/* AT client port initialization */
-int at_client_port_init(void)
-{
-    /* create current AT socket event */
-    at_socket_event = rt_event_create("at_sock_event", RT_IPC_FLAG_FIFO);
-    if (!at_socket_event)
-    {
-        LOG_E("AT client port initialize failed! at_sock_event create failed!");
-        return -RT_ENOMEM;
-    }
-
-    /* create current AT socket lock */
-    at_event_lock = rt_mutex_create("at_event_lock", RT_IPC_FLAG_FIFO);
-    if (!at_event_lock)
-    {
-        LOG_E("AT client port initialize failed! at_sock_lock create failed!");
-        rt_event_delete(at_socket_event);
-        return -RT_ENOMEM;
-    }
-
-    /* register URC data execution function  */
-    at_set_urc_table(urc_table, sizeof(urc_table) / sizeof(urc_table[0]));
-
-    return RT_EOK;
-}
-
 #define AT_SEND_CMD(resp, resp_line, timeout, cmd)                                                              \
     do                                                                                                          \
     {                                                                                                           \
@@ -1417,17 +1366,42 @@ MSH_CMD_EXPORT_ALIAS(ec20_domain, at_domain, AT domain resolve);
 #endif
 
 static const struct at_device_ops ec20_socket_ops = {
-    .connect =              ec20_socket_connect,
-    .close =                ec20_socket_close,
-    .send =                 ec20_socket_send,
-    .domain_resolve =       ec20_domain_resolve,
-    .set_event_cb =         ec20_socket_set_event_cb,
+    ec20_socket_connect,
+    ec20_socket_close,
+    ec20_socket_send,
+    ec20_domain_resolve,
+    ec20_socket_set_event_cb,
 };
 
 static int at_socket_device_init(void)
-{
+{  
+    /* create current AT socket event */
+    at_socket_event = rt_event_create("at_se", RT_IPC_FLAG_FIFO);
+    if (!at_socket_event)
+    {
+        LOG_E("AT client port initialize failed! at_sock_event create failed!");
+        return -RT_ENOMEM;
+    }
+
+    /* create current AT socket lock */
+    at_event_lock = rt_mutex_create("at_se", RT_IPC_FLAG_FIFO);
+    if (!at_event_lock)
+    {
+        LOG_E("AT client port initialize failed! at_sock_lock create failed!");
+        rt_event_delete(at_socket_event);
+        return -RT_ENOMEM;
+    }
+
+    /* initialize AT client */
+    at_client_init(AT_DEVICE_NAME, AT_DEVICE_RECV_BUFF_LEN);
+    
+    /* register URC data execution function  */
+    at_set_urc_table(urc_table, sizeof(urc_table) / sizeof(urc_table[0]));
+    
+    /* initialize EC20 network */
     ec20_net_init();
 
+    /* set EC20 AT Socket options */
     at_scoket_device_register(&ec20_socket_ops);
 
     return 0;
